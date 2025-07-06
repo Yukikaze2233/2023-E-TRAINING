@@ -6,26 +6,106 @@ import math
 import struct
 import string
 
-#  0ÎªÊä³öºìÉ«¼¤¹âÓëÂÌÉ«¼¤¹âµÄÆ«²î£¬ 1ÎªÊä³ö¼¤¹âµãÓëÉ¨¾ØĞÎÄ¿±êµãµÄÆ«²î, 2ÎªÊä³ö¼¤¹âµãÓëÒ»Ö±ÏßÍù¸´ÔË¶¯µÄÄ¿±êµãµÄÆ«²î£¬Ä£Ê½4ÎªÊä³ö¼¤¹âµãÓë1Ä¿±êµãµÄÆ«²î
-#  Ä£Ê½2ÓëÄ£Ê½3Îªµ÷ÊÔÏÂÎ»»úpidÊ±Ê¹ÓÃ
+#  0ä¸ºè¾“å‡ºçº¢è‰²æ¿€å…‰ä¸ç»¿è‰²æ¿€å…‰çš„åå·®ï¼Œ 1ä¸ºè¾“å‡ºæ¿€å…‰ç‚¹ä¸æ‰«çŸ©å½¢ç›®æ ‡ç‚¹çš„åå·®, 2ä¸ºè¾“å‡ºæ¿€å…‰ç‚¹ä¸ä¸€ç›´çº¿å¾€å¤è¿åŠ¨çš„ç›®æ ‡ç‚¹çš„åå·®ï¼Œæ¨¡å¼4ä¸ºè¾“å‡ºæ¿€å…‰ç‚¹ä¸1ç›®æ ‡ç‚¹çš„åå·®
+#  æ¨¡å¼2ä¸æ¨¡å¼3ä¸ºè°ƒè¯•ä¸‹ä½æœºpidæ—¶ä½¿ç”¨
 mode = 1
 
 cap = cv2.VideoCapture(0)
-#  ´ò¿ª±¾µØÊÓÆµµ÷ÊÔ¿ÉÔÚpc¶Ëµ÷ÊÔÊ±Ê¹ÓÃ
+#  æ‰“å¼€æœ¬åœ°è§†é¢‘è°ƒè¯•å¯åœ¨pcç«¯è°ƒè¯•æ—¶ä½¿ç”¨
 video = cv2.VideoCapture('WIN_20240503_22_01_05_Pro.mp4')
 cap.set(3, 640)
 cap.set(4, 360)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
+def float_to_bytes_big_endian(f_val):
 
-# Ê¹ÓÃÓàÏÒ¶¨Àí²âÁ¿¾ØĞÎ½Ç¶È£¬É¸Ñ¡ËùĞèËÄ±ßĞÎ
+    little_endian = struct.pack('<f', f_val)
+    big_endian = little_endian[::-1]  # åè½¬å­—èŠ‚åº
+    return big_endian
+
+def bytes_to_float_big_endian(byte_data):
+
+    # å…ˆåè½¬ä¸ºå°ç«¯åºï¼Œç„¶åè§£åŒ…
+    little_endian = byte_data[::-1]
+    return struct.unpack('<f', little_endian)[0]
+
+def create_target_angle_packet(target_yaw, target_pitch):
+    packet = bytearray()
+    # åŒ…å¤´ï¼šå›ºå®šæ ‡è¯†ç¬¦ [0xAA, 0x55] - ä»…ç”¨äºè¯†åˆ«æ•°æ®åŒ…è¾¹ç•Œ
+    packet.extend([0xAA, 0x55])
+    
+   
+    packet.extend(float_to_bytes_big_endian(target_yaw))
+    
+   
+    packet.extend(float_to_bytes_big_endian(target_pitch))
+    
+    # åŒ…å°¾ï¼šå›ºå®šæ ‡è¯†ç¬¦ [0x55, 0xAA] - ä»…ç”¨äºè¯†åˆ«æ•°æ®åŒ…è¾¹ç•Œ
+    packet.extend([0x55, 0xAA])
+    
+    return packet
+
+def parse_attitude_packet(data_buffer):
+
+    if len(data_buffer) < 22:  # 2+4*4+2 = 22å­—èŠ‚
+        return None
+    
+    # æŸ¥æ‰¾åŒ…å¤´æ ‡è¯†ç¬¦ [0xBB, 0x66]
+    for i in range(len(data_buffer) - 21):
+        if data_buffer[i] == 0xBB and data_buffer[i+1] == 0x66:
+            # æ£€æŸ¥åŒ…å°¾æ ‡è¯†ç¬¦ [0x66, 0xBB]
+            if data_buffer[i+20] == 0x66 and data_buffer[i+21] == 0xBB:
+                try:
+                    # æå–æœ‰ç”¨æ•°æ®ï¼ˆè·³è¿‡åŒ…å¤´ï¼Œåªè§£æä¸­é—´çš„floatæ•°æ®ï¼‰
+                    yaw = bytes_to_float_big_endian(data_buffer[i+2:i+6])       
+                    pitch = bytes_to_float_big_endian(data_buffer[i+6:i+10])    
+                    yaw_rate = bytes_to_float_big_endian(data_buffer[i+10:i+14]) 
+                    pitch_rate = bytes_to_float_big_endian(data_buffer[i+14:i+18]) 
+                    
+                    return {
+                        'yaw': yaw,
+                        'pitch': pitch,
+                        'yaw_rate': yaw_rate,
+                        'pitch_rate': pitch_rate
+                    }
+                except:
+                    continue
+    return None
+
+def send_target_angles(serial, target_yaw, target_pitch):
+
+    packet = create_target_angle_packet(target_yaw, target_pitch)
+    
+    # å‘é€å®Œæ•´æ•°æ®åŒ…ï¼ˆåŒ…æ‹¬æ ‡è¯†ç¬¦ï¼‰
+    for byte in packet:
+        wiringpi.serialPutchar(serial, byte)
+    
+    print(f"yaw: {target_yaw:.2f}Â°,pitch : {target_pitch:.2f}Â°")
+
+def read_attitude_data(serial):
+
+    # è¯»å–ä¸²å£ç¼“å†²åŒºä¸­çš„æ‰€æœ‰å¯ç”¨æ•°æ®
+    data_buffer = bytearray()
+    while wiringpi.serialDataAvail(serial) > 0:
+        byte = wiringpi.serialGetchar(serial)
+        if byte != -1:
+            data_buffer.append(byte & 0xFF)
+    
+    # è§£æå§¿æ€æ•°æ®åŒ…
+    if len(data_buffer) > 0:
+        attitude = parse_attitude_packet(data_buffer)
+        if attitude:
+            return attitude
+    
+    return None
+
+# ä½¿ç”¨ä½™å¼¦å®šç†æµ‹é‡çŸ©å½¢è§’åº¦ï¼Œç­›é€‰æ‰€éœ€å››è¾¹å½¢
 def angle_cos(p0, p1, p2):
-    # ×ª»»ÎªÕıÈ·µÄĞÎ×´£¬¼´ (2,) ¶ø²»ÊÇ (1, 2)
+    # è½¬æ¢ä¸ºæ­£ç¡®çš„å½¢çŠ¶ï¼Œå³ (2,) è€Œä¸æ˜¯ (1, 2)
     d1, d2 = (p0-p1).squeeze(), (p2-p1).squeeze()
     return abs(np.dot(d1, d2) / (np.linalg.norm(d1) * np.linalg.norm(d2)))
 
-
-#  Èç¹û¾ØĞÎËÄ¸ö½Çµã¾àÀë¹ı½ü£¬ÔòÅĞ¶ÏÎªÍ¬Ò»¾ØĞÎ
+#  å¦‚æœçŸ©å½¢å››ä¸ªè§’ç‚¹è·ç¦»è¿‡è¿‘ï¼Œåˆ™åˆ¤æ–­ä¸ºåŒä¸€çŸ©å½¢
 def are_rectangles_close(rect1, rect2):
     threshold = 2
     for p1, p2 in zip(rect1, rect2):
@@ -33,107 +113,102 @@ def are_rectangles_close(rect1, rect2):
             return False
     return True
 
-
-#Îª¾ØĞÎËÄ¸ö½ÇµãÅÅĞòÊ¹ÓÃ
+#ä¸ºçŸ©å½¢å››ä¸ªè§’ç‚¹æ’åºä½¿ç”¨
 def sort_vertices(approx):
-    # ¼ÆËãÖÊĞÄ
+    # è®¡ç®—è´¨å¿ƒ
     center = approx.mean(axis=0)
-    # ¼ÆËãÃ¿¸öµãÏà¶ÔÓÚÖÊĞÄµÄ½Ç¶È²¢ÅÅĞò
+    # è®¡ç®—æ¯ä¸ªç‚¹ç›¸å¯¹äºè´¨å¿ƒçš„è§’åº¦å¹¶æ’åº
 
     def sort_criteria(point):
         return np.arctan2(point[0][1] - center[0][1], point[0][0] - center[0][0])
     sorted_vertices = sorted(approx, key=sort_criteria)
     return np.array(sorted_vertices)
 
-
-#ÕÒ¾ØĞÎÊ¹ÓÃ£¬¿ÉÒÔ¼ì²âµ½Ç¶Ì×ÂÖÀª
+#æ‰¾çŸ©å½¢ä½¿ç”¨ï¼Œå¯ä»¥æ£€æµ‹åˆ°åµŒå¥—è½®å»“
 def find_rectangles(image):
-    # ²éÕÒÂÖÀª
+    # æŸ¥æ‰¾è½®å»“
     contours, _ = cv2.findContours(image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-    # ´æ´¢¼ì²âµ½µÄ¾ØĞÎºÍ½Çµã
+    # å­˜å‚¨æ£€æµ‹åˆ°çš„çŸ©å½¢å’Œè§’ç‚¹
     rectangles_data = []
 
-    # ´¦ÀíÃ¿Ò»¸öÂÖÀª
+    # å¤„ç†æ¯ä¸€ä¸ªè½®å»“
     for cnt in contours:
-        # ¶ÔÂÖÀª½øĞĞ½üËÆ
+        # å¯¹è½®å»“è¿›è¡Œè¿‘ä¼¼
         epsilon = 0.05 * cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, epsilon, True)
 
-        # ¼ì²éÊÇ·ñÎª¾ØĞÎ£¨ËÄ¸ö½Çµã£©
+        # æ£€æŸ¥æ˜¯å¦ä¸ºçŸ©å½¢ï¼ˆå››ä¸ªè§’ç‚¹ï¼‰
         if len(approx) == 4 and cv2.contourArea(approx) > 1000:
             cosines = [angle_cos(approx[i], approx[(i + 1) % 4], approx[(i + 2) % 4]) for i in range(4)]
-            if all(cos < 0.1 for cos in cosines):  # ¼ì²é½Ç¶È½Ó½ü90¶È
+            if all(cos < 0.1 for cos in cosines):  # æ£€æŸ¥è§’åº¦æ¥è¿‘90åº¦
                 approx_sorted = sort_vertices(approx)
                 too_close = any(are_rectangles_close(approx_sorted, sort_vertices(existing))
                                 for existing in rectangles_data)
                 if not too_close:
-                    # ±£´æ½Çµã
+                    # ä¿å­˜è§’ç‚¹
                     rectangles_data.append(approx_sorted)
-                    # ÔÚÔ­Í¼ÉÏ±ê³ö¾ØĞÎ
+                    # åœ¨åŸå›¾ä¸Šæ ‡å‡ºçŸ©å½¢
                     cv2.drawContours(img_contour, [approx_sorted], -1, (255, 255, 0), 1)
 
     return rectangles_data
 
-
-#  Éè¶¨ºìÉ«£¬ÂÌÉ«HSVÉ«ÓòµÄãĞÖµ
-#  Êµ¼ÊĞèÒª¸ù¾İ»·¾³Ìõ¼şµ÷Õû
+#  è®¾å®šçº¢è‰²ï¼Œç»¿è‰²HSVè‰²åŸŸçš„é˜ˆå€¼
+#  å®é™…éœ€è¦æ ¹æ®ç¯å¢ƒæ¡ä»¶è°ƒæ•´
 red_hue_low, red_hue_high, red_saturation_1, red_saturation_2, red_value_1, red_value_2 = 150, 15, 70, 70, 70, 70
 green_hue_low, green_hue_high, green_saturation, green_value = 50, 90, 90, 90
 
-# ÉèÖÃºìÉ«µÄãĞÖµ·¶Î§
-# ×¢ÒâºìÉ«ÔÚHSVÑÕÉ«¿Õ¼äÖĞ¿ç0¶È£¬¿ÉÄÜĞèÒªÁ½²¿·ÖãĞÖµ
-# ¶¨ÒåºìÉ«HSVãĞÖµ£¬Í¬Ê±¼ì²â¸ßÁÁ¶ÈÇøÓò
+# è®¾ç½®çº¢è‰²çš„é˜ˆå€¼èŒƒå›´
+# æ³¨æ„çº¢è‰²åœ¨HSVé¢œè‰²ç©ºé—´ä¸­è·¨0åº¦ï¼Œå¯èƒ½éœ€è¦ä¸¤éƒ¨åˆ†é˜ˆå€¼
+# å®šä¹‰çº¢è‰²HSVé˜ˆå€¼ï¼ŒåŒæ—¶æ£€æµ‹é«˜äº®åº¦åŒºåŸŸ
 lower_red1 = np.array([0, red_saturation_1, red_value_1])
 upper_red1 = np.array([red_hue_high, 255, 255])
 lower_red2 = np.array([red_hue_low, red_saturation_2, red_value_2])
 upper_red2 = np.array([180, 255, 255])
-# Éè¶¨ÂÌÉ«µÄãĞÖµ
+# è®¾å®šç»¿è‰²çš„é˜ˆå€¼
 lower_green = np.array([green_hue_low, green_saturation, green_value])
 upper_green = np.array([green_hue_high, 255, 255])
 
 ret, frame = cap.read()
-# »ñÈ¡Í¼ÏñµÄÎ¬¶È
+# è·å–å›¾åƒçš„ç»´åº¦
 height, width = frame.shape[:2]
-# ¼ÆËãÖĞĞÄÇøÓòµÄÆğÊ¼µã
+# è®¡ç®—ä¸­å¿ƒåŒºåŸŸçš„èµ·å§‹ç‚¹
 start_x = width // 2 - 240
 start_y = height // 2 - 240
-# ´´½¨Ò»¸öÈ«ºÚµÄÕÚÕÖ
+# åˆ›å»ºä¸€ä¸ªå…¨é»‘çš„é®ç½©
 black_mask = np.zeros((height, width), dtype=np.uint8)
-# ÔÚÕÚÕÖÖĞĞÄÇøÓòÌî³ä°×É«
+# åœ¨é®ç½©ä¸­å¿ƒåŒºåŸŸå¡«å……ç™½è‰²
 black_mask[start_y:start_y + 480, start_x:start_x + 470] = 255
 
-# ¿¨¶ûÂüÂË²¨Ëã·¨´¦Àí¼¤¹âµã×ø±ê£¬Î´µ÷²Î£¬Ğ§¹û´æÒÉ
-# ³õÊ¼»¯¿¨¶ûÂüÂË²¨Æ÷
+# å¡å°”æ›¼æ»¤æ³¢ç®—æ³•å¤„ç†æ¿€å…‰ç‚¹åæ ‡ï¼Œæœªè°ƒå‚ï¼Œæ•ˆæœå­˜ç–‘
+# åˆå§‹åŒ–å¡å°”æ›¼æ»¤æ³¢å™¨
 kalman = cv2.KalmanFilter(4, 2)
 kalman.measurementMatrix = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], np.float32)
 kalman.transitionMatrix = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32)
-kalman.processNoiseCov = 1e-5 * np.eye(4, dtype=np.float32)  # µ÷ÕûÕâ¸ö²ÎÊı¿ÉÒÔ¸Ä±äÄ£ĞÍ¶ÔÏµÍ³¶¯Ì¬µÄÃô¸Ğ³Ì¶È
-kalman.measurementNoiseCov = 1e-3 * np.eye(2, dtype=np.float32)  # ²âÁ¿ÔëÉù
+kalman.processNoiseCov = 1e-5 * np.eye(4, dtype=np.float32)  # è°ƒæ•´è¿™ä¸ªå‚æ•°å¯ä»¥æ”¹å˜æ¨¡å‹å¯¹ç³»ç»ŸåŠ¨æ€çš„æ•æ„Ÿç¨‹åº¦
+kalman.measurementNoiseCov = 1e-3 * np.eye(2, dtype=np.float32)  # æµ‹é‡å™ªå£°
 kalman.errorCovPost = 1e-1 * np.eye(4, dtype=np.float32)
 kalman.statePost = np.array([0, 0, 0, 0], np.float32)
 
-
 def update_kalman_filter(cx, cy):
-    # ½«µ±Ç°¼ì²âµ½µÄÎ»ÖÃÓÃ×÷²âÁ¿¸üĞÂ
+    # å°†å½“å‰æ£€æµ‹åˆ°çš„ä½ç½®ç”¨ä½œæµ‹é‡æ›´æ–°
     measurement = np.array([[np.float32(cx)], [np.float32(cy)]])
-    # ¸üĞÂ¿¨¶ûÂüÂË²¨Æ÷
+    # æ›´æ–°å¡å°”æ›¼æ»¤æ³¢å™¨
     kalman.correct(measurement)
-    # Ô¤²âÏÂÒ»¸ö×´Ì¬
+    # é¢„æµ‹ä¸‹ä¸€ä¸ªçŠ¶æ€
     predicted = kalman.predict()
     return predicted
 
-
 def red_laser_detection(image):
-    # ´´½¨ºìÉ«¼¤¹âÑÚÂë
+    # åˆ›å»ºçº¢è‰²æ¿€å…‰æ©ç 
     mask1 = cv2.inRange(image, lower_red1, upper_red1)
     mask2 = cv2.inRange(image, lower_red2, upper_red2)
     mask_red = cv2.bitwise_or(mask1, mask2)
 
-    # ½«ÕÚÕÖÓ¦ÓÃµ½Í¼Ïñ
+    # å°†é®ç½©åº”ç”¨åˆ°å›¾åƒ
     mask_red = cv2.bitwise_and(mask_red, mask_red, mask=black_mask)
 
-    # ĞÎÌ¬Ñ§²Ù×÷ÔöÇ¿ÑÚÂë
+    # å½¢æ€å­¦æ“ä½œå¢å¼ºæ©ç 
     kernel = np.ones((5, 5), np.uint8)
     mask_red = cv2.dilate(mask_red, kernel, iterations=1)
     mask_red = cv2.erode(mask_red, kernel, iterations=1)
@@ -144,30 +219,30 @@ def red_laser_detection(image):
 
     contours, hierarchy = cv2.findContours(mask_canny, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
 
-    # ³õÊ¼»¯±äÁ¿ÒÔ´æ´¢×î¼ÑÂÖÀª
+    # åˆå§‹åŒ–å˜é‡ä»¥å­˜å‚¨æœ€ä½³è½®å»“
     best_contour = None
     largest_area = 0
 
     if hierarchy is not None:
-        # ±éÀúËùÓĞÂÖÀª
+        # éå†æ‰€æœ‰è½®å»“
         for idx, contour in enumerate(contours):
             area = cv2.contourArea(contour)
-            # ¼ì²éµ±Ç°ÂÖÀªÊÇ·ñÓĞ×ÓÂÖÀª
-            if hierarchy[0][idx][2] != -1:  # ÓĞ×ÓÂÖÀª
+            # æ£€æŸ¥å½“å‰è½®å»“æ˜¯å¦æœ‰å­è½®å»“
+            if hierarchy[0][idx][2] != -1:  # æœ‰å­è½®å»“
                 inner_idx = hierarchy[0][idx][2]
                 inner_contour = contours[inner_idx]
                 inner_area = cv2.contourArea(inner_contour)
-                # Ê¹ÓÃ×ÓÂÖÀª×÷Îª×î¼ÑÂÖÀª
+                # ä½¿ç”¨å­è½®å»“ä½œä¸ºæœ€ä½³è½®å»“
                 if inner_area > largest_area:
                     largest_area = inner_area
                     best_contour = inner_contour
             else:
-                # Ã»ÓĞ×ÓÂÖÀª£¬¿¼ÂÇÕâÊÇÒ»¸öµ¥¶ÀµÄÍâ²¿ÂÖÀª
+                # æ²¡æœ‰å­è½®å»“ï¼Œè€ƒè™‘è¿™æ˜¯ä¸€ä¸ªå•ç‹¬çš„å¤–éƒ¨è½®å»“
                 if area > largest_area:
                     largest_area = area
                     best_contour = contour
 
-    # Èç¹ûÕÒµ½ÁË×î¼ÑÂÖÀª£¬¼ÆËãÆäÖÊĞÄ
+    # å¦‚æœæ‰¾åˆ°äº†æœ€ä½³è½®å»“ï¼Œè®¡ç®—å…¶è´¨å¿ƒ
     if best_contour is not None:
         M = cv2.moments(best_contour)
         if M["m00"] != 0:
@@ -176,20 +251,19 @@ def red_laser_detection(image):
             cv2.circle(img_contour, (cx, cy), 5, (255, 255, 0), -1)
             return cx, cy
 
-
 def green_laser_detection(image):
-    # ¸ù¾İãĞÖµ¹¹½¨ÑÚÂë
+    # æ ¹æ®é˜ˆå€¼æ„å»ºæ©ç 
     green_mask = cv2.inRange(image, lower_green, upper_green)
 
-    # ½«ÕÚÕÖÓ¦ÓÃµ½Í¼Ïñ
+    # å°†é®ç½©åº”ç”¨åˆ°å›¾åƒ
     green_mask = cv2.bitwise_and(green_mask, green_mask, mask=black_mask)
     mask_canny = cv2.Canny(green_mask, 0, 105)
     cv2.imshow('green_mask', mask_canny)
-    # Ñ°ÕÒÂÖÀª
+    # å¯»æ‰¾è½®å»“
     contours, _ = cv2.findContours(mask_canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     if contours:
-        # È¡×î´óÂÖÀª
+        # å–æœ€å¤§è½®å»“
         max_green_laser_contour = max(contours, key=cv2.contourArea)
         (x, y), _ = cv2.minEnclosingCircle(max_green_laser_contour)
         green_laser_point = (int(x), int(y))
@@ -198,25 +272,23 @@ def green_laser_detection(image):
 
         return green_laser_point
 
-
-# ÔÚºÚ½º´øÖĞĞÄÔÈËÙÔË¶¯µÄµã£¬¼´´¿±Õ»·É¨¾ØĞÎµÄÄ¿±êµã
-# º¯ÊıÀ´¼ÆËãÔÚ¾ØĞÎ±ßÉÏÒÆ¶¯µÄµãµÄÎ»ÖÃ
+# åœ¨é»‘èƒ¶å¸¦ä¸­å¿ƒåŒ€é€Ÿè¿åŠ¨çš„ç‚¹ï¼Œå³çº¯é—­ç¯æ‰«çŸ©å½¢çš„ç›®æ ‡ç‚¹
+# å‡½æ•°æ¥è®¡ç®—åœ¨çŸ©å½¢è¾¹ä¸Šç§»åŠ¨çš„ç‚¹çš„ä½ç½®
 def move_point_on_rectangle(points, t, total_steps):
-    # È·¶¨µãÔÚÄÄÒ»Ìõ±ßÉÏ
+    # ç¡®å®šç‚¹åœ¨å“ªä¸€æ¡è¾¹ä¸Š
     num_points = len(points)
-    # È·¶¨Ã¿Ìõ±ßµÄ³¤¶ÈÔÚ×Ü²½ÊıÖĞµÄÕ¼±È
+    # ç¡®å®šæ¯æ¡è¾¹çš„é•¿åº¦åœ¨æ€»æ­¥æ•°ä¸­çš„å æ¯”
     steps_per_edge = total_steps // num_points
-    # È·¶¨µ±Ç°±ß
+    # ç¡®å®šå½“å‰è¾¹
     current_edge = int(t // steps_per_edge) % num_points
-    # µ±Ç°±ßµÄÆğµãºÍÖÕµã
+    # å½“å‰è¾¹çš„èµ·ç‚¹å’Œç»ˆç‚¹
     start_point = points[current_edge]
     end_point = points[(current_edge + 1) % num_points]
-    # ¼ÆËãtÔÚµ±Ç°±ßµÄÏà¶ÔÎ»ÖÃ
+    # è®¡ç®—tåœ¨å½“å‰è¾¹çš„ç›¸å¯¹ä½ç½®
     t_relative = (t % steps_per_edge) / steps_per_edge
-    # ¼ÆËãµãµÄÎ»ÖÃ
+    # è®¡ç®—ç‚¹çš„ä½ç½®
     point_position = start_point + t_relative * (end_point - start_point)
     return point_position
-
 
 point_level = [320, 240]
 velocity = 5
@@ -224,19 +296,16 @@ direction = 1
 
 def move_point_level(velocity, direction):
     point_level[0] += velocity * direction
-    
-
     cv2.circle(img_contour, point_level, 2, (0, 255, 0), thickness=-1)
 
 def callback(x):
     pass
 
-
 cv2.namedWindow('Color Adjustments', cv2.WINDOW_NORMAL)
 cv2.resizeWindow('Color Adjustments', 600, 400)
 
-# ´´½¨»¬Ìõ£¬Ã¿¸ö²ÎÊıÒ»¸ö
-# ºìÉ«µÄÉ«µ÷¡¢±¥ºÍ¶ÈºÍÁÁ¶ÈÖµ
+# åˆ›å»ºæ»‘æ¡ï¼Œæ¯ä¸ªå‚æ•°ä¸€ä¸ª
+# çº¢è‰²çš„è‰²è°ƒã€é¥±å’Œåº¦å’Œäº®åº¦å€¼
 cv2.createTrackbar('Red Hue Low', 'Color Adjustments', 150, 180, callback)
 cv2.createTrackbar('Red Hue High', 'Color Adjustments', 15, 180, callback)
 cv2.createTrackbar('Red Saturation 1', 'Color Adjustments', 70, 255, callback)
@@ -244,23 +313,26 @@ cv2.createTrackbar('Red Saturation 2', 'Color Adjustments', 70, 255, callback)
 cv2.createTrackbar('Red Value 1', 'Color Adjustments', 70, 255, callback)
 cv2.createTrackbar('Red Value 2', 'Color Adjustments', 70, 255, callback)
 
-# ÂÌÉ«µÄÉ«µ÷¡¢±¥ºÍ¶ÈºÍÁÁ¶ÈÖµ
+# ç»¿è‰²çš„è‰²è°ƒã€é¥±å’Œåº¦å’Œäº®åº¦å€¼
 cv2.createTrackbar('Green Hue Low', 'Color Adjustments', 50, 180, callback)
 cv2.createTrackbar('Green Hue High', 'Color Adjustments', 90, 180, callback)
 cv2.createTrackbar('Green Saturation', 'Color Adjustments', 90, 255, callback)
 cv2.createTrackbar('Green Value', 'Color Adjustments', 90, 255, callback)
 
-# ´´½¨ÑÕÉ«¿éÒÔÏÔÊ¾µ±Ç°ÉèÖÃµÄÑÕÉ«
+# åˆ›å»ºé¢œè‰²å—ä»¥æ˜¾ç¤ºå½“å‰è®¾ç½®çš„é¢œè‰²
 color_block = np.zeros((300, 300, 3), np.uint8)
 
-#  ¼ÆÊ±ÓÃ
+#  è®¡æ—¶ç”¨
 t = 0
 total_steps = 300
 
 track_point = (320, 240)
 
-# ³õÊ¼»¯´®¿Ú
-serial = wiringpi.serialOpen('/dev/ttyACM0', 921600)
+# åˆå§‹åŒ–ä¸²å£
+serial = wiringpi.serialOpen('/dev/ttyUSB0', 921600)
+
+# ç”¨äºå­˜å‚¨æ¥æ”¶åˆ°çš„å§¿æ€æ•°æ®
+current_attitude = None
 
 while(cap.isOpened()):
     ret, frame = cap.read()
@@ -271,18 +343,28 @@ while(cap.isOpened()):
     fps = cap.get(cv2.CAP_PROP_FPS)
     cv2.putText(img_contour, f"fps:{fps}", (20, 210),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
-    #print("fps:",fps)
 
-    # Ô¤´¦ÀíÍ¼Ïñ£¬°üÀ¨×ªÎª»Ò¶ÈÍ¼£¬¸ßË¹Ä£ºı£¬±ßÔµ¼ì²â£¬ÒÔ¼°¼ì²â¼¤¹âÓÃµÄHSVÉ«ÓòÍ¼
+    # è¯»å–ä¸‹ä½æœºå‘é€çš„å§¿æ€æ•°æ®
+    attitude_data = read_attitude_data(serial)
+    if attitude_data:
+        current_attitude = attitude_data
+        print(f"Received attitude - Yaw: {attitude_data['yaw']:.2f}, Pitch: {attitude_data['pitch']:.2f}")
+
+    # æ˜¾ç¤ºå½“å‰å§¿æ€æ•°æ®
+    if current_attitude:
+        cv2.putText(img_contour, f"Attitude Y:{current_attitude['yaw']:.1f} P:{current_attitude['pitch']:.1f}", 
+                    (20, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1, cv2.LINE_AA)
+
+    # é¢„å¤„ç†å›¾åƒï¼ŒåŒ…æ‹¬è½¬ä¸ºç°åº¦å›¾ï¼Œé«˜æ–¯æ¨¡ç³Šï¼Œè¾¹ç¼˜æ£€æµ‹ï¼Œä»¥åŠæ£€æµ‹æ¿€å…‰ç”¨çš„HSVè‰²åŸŸå›¾
     img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     img_blur = cv2.GaussianBlur(img_gray, (5,5), 1)
     img_canny = cv2.Canny(img_blur, 50, 150)
     img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    #ÕÒ¾ØĞÎ£¬ºì¼¤¹â£¬ÂÌ¼¤¹â
+    #æ‰¾çŸ©å½¢ï¼Œçº¢æ¿€å…‰ï¼Œç»¿æ¿€å…‰
     rectangles = find_rectangles(img_canny)
     red_laser = red_laser_detection(img_hsv)
-    # ¿¨¶ûÂüÂË²¨Ô¤²â¼¤¹âµãÎ»ÖÃ£¬Î´µ÷²Î£¬Ğ§¹û´æÒÉ
+    # å¡å°”æ›¼æ»¤æ³¢é¢„æµ‹æ¿€å…‰ç‚¹ä½ç½®ï¼Œæœªè°ƒå‚ï¼Œæ•ˆæœå­˜ç–‘
     if red_laser is not None:
         red_laser_cx, red_laser_cy = red_laser
         predicted_red_laser = update_kalman_filter(red_laser_cx, red_laser_cy)
@@ -290,7 +372,7 @@ while(cap.isOpened()):
         cv2.circle(img_contour, predicted_red_laser_position, 3, (255, 0, 0), -1)
     green_laser = green_laser_detection(img_hsv)
 
-    #ÏÔÊ¾·Ö±æÂÊ
+    #æ˜¾ç¤ºåˆ†è¾¨ç‡
     cv2.putText(img_contour, f"resolution:{width}*{height}", (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
 
@@ -306,96 +388,72 @@ while(cap.isOpened()):
         cv2.putText(img_contour, f"green:{green_laser}", (20, 130),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
 
-    data = []
+    # ===================== ä¿®æ”¹ï¼šä½¿ç”¨æ–°çš„äºŒè¿›åˆ¶åè®®å‘é€æ•°æ® =====================
 
     if red_laser is not None and green_laser is not None and mode == 0:
-        # ¼ÆËãÊä³ö
-        output = list(map(lambda x, y: x - y, predicted_red_laser_position, green_laser))
-        cv2.putText(img_contour, f"output:{output}", (20, 170),
+        # è®¡ç®—åå·®ï¼ˆè¿™é‡Œå‡è®¾åå·®ç›´æ¥ä½œä¸ºç›®æ ‡è§’åº¦ï¼Œä½ å¯èƒ½éœ€è¦æ ¹æ®å®é™…æƒ…å†µè½¬æ¢ï¼‰
+        error_x = predicted_red_laser_position[0] - green_laser[0]
+        error_y = predicted_red_laser_position[1] - green_laser[1]
+        
+        # å°†åƒç´ åå·®è½¬æ¢ä¸ºè§’åº¦åå·®ï¼ˆä½ å¯èƒ½éœ€è¦æ ¹æ®å®é™…æ ‡å®šè°ƒæ•´è¿™ä¸ªè½¬æ¢ï¼‰
+        target_yaw = float(error_x * 0.1)  # æ¯”ä¾‹ç³»æ•°éœ€è¦æ ¹æ®å®é™…æƒ…å†µè°ƒæ•´
+        target_pitch = float(error_y * 0.1)
+        
+        cv2.putText(img_contour, f"target YAW:{target_yaw:.2f} PITCH:{target_pitch:.2f}", (20, 170),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
-        # ÏÈ¼ÆËãÆ«²î£¬ÔÙ°ÑÕûĞÍÊı×é×ªÎªfloat£¨Ğ­ÒéÒªÇó£©£¬ÔÙ×ª»»Îª×Ö·û´®ĞÍÊı×é£¬×îºó·¢ËÍ
-        data_float = [str(num) for num in list(float(num) for num in list(map(lambda x, y: y - x, green_laser, predicted_red_laser_position)))]
-        print("output:", output)
-
-        data.append("#P3=")
-        data.append(data_float[0])
-        data.append("!")
-        data.append("#P4=")
-        data.append(data_float[1])
-        data.append("!")
-
-        for value in data:
-            # bytes_data = struct.pack('str', value)
-            for byte in value:
-                wiringpi.serialPutchar(serial, ord(byte))
-                print(data)
+        
+        # å‘é€ç›®æ ‡è§’åº¦
+        send_target_angles(serial, target_yaw, target_pitch)
 
     if (mode == 1) and len(rectangles) >= 2:
         average_rect = np.average([rectangles[0], rectangles[1]], axis=0).astype(np.int32)
         cv2.drawContours(img_contour, [average_rect], -1, (255, 255, 0), 1)
         rect_point = move_point_on_rectangle(average_rect, t, total_steps)
-        # È·±£ rect_point ÊÇÒ»¸öÕûÊıÀàĞÍµÄ¶şÔª×é
+        # ç¡®ä¿ rect_point æ˜¯ä¸€ä¸ªæ•´æ•°ç±»å‹çš„äºŒå…ƒç»„
         rect_point_1 = tuple(rect_point[0].astype(int))
         cv2.circle(img_contour, rect_point_1, 1, (0, 255, 0), thickness=2)
         if red_laser is not None:
-            output = list(map(lambda x, y: y - x, rect_point_1, predicted_red_laser_position))
-            data_float = [str(num) for num in list(float(num) for num in list(map(lambda x, y: y - x, rect_point_1, predicted_red_laser_position)))]
-            print("output:", output)
+            error_x = predicted_red_laser_position[0] - rect_point_1[0]
+            error_y = predicted_red_laser_position[1] - rect_point_1[1]
+            
+            # å°†åƒç´ åå·®è½¬æ¢ä¸ºè§’åº¦åå·®
+            target_yaw = float(error_x * 0.1)
+            target_pitch = float(error_y * 0.1)
+            
+            # å‘é€ç›®æ ‡è§’åº¦
+            send_target_angles(serial, target_yaw, target_pitch)
+            print("Target angles:", {"yaw": target_yaw, "pitch": target_pitch})
 
-            data.append("#P3=")
-            data.append(data_float[0])
-            data.append("!")
-            data.append("#P4=")
-            data.append(data_float[1])
-            data.append("!")
-
-            for value in data:
-                # bytes_data = struct.pack('str', value)
-                for byte in value:
-                    wiringpi.serialPutchar(serial, ord(byte))
-                    print(data)
 
     if mode == 2 and red_laser is not None:
         move_point_level(velocity, direction)
         if point_level[0] <= 150 or point_level[0] >= 500:
             direction *= -1
-        output = list(map(lambda x, y: y - x, point_level, red_laser))
-        data_float = [str(num) for num in list(float(num) for num in list(map(lambda x, y: y - x, point_level, red_laser)))]
-        print("output:", output)
         
-        data.append("#P3=")
-        data.append(data_float[0])
-        data.append("!")
-        data.append("#P4=")
-        data.append(data_float[1])
-        data.append("!")
-
-        for value in data:
-            # bytes_data = struct.pack('str', value)
-            for byte in value:
-                wiringpi.serialPutchar(serial, ord(byte))   
-                print(data)
+        error_x = red_laser[0] - point_level[0]
+        error_y = red_laser[1] - point_level[1]
+        
+        # å°†åƒç´ åå·®è½¬æ¢ä¸ºè§’åº¦åå·®
+        target_yaw = float(error_x * 0.1)
+        target_pitch = float(error_y * 0.1)
+        
+        # å‘é€ç›®æ ‡è§’åº¦
+        send_target_angles(serial, target_yaw, target_pitch)
 
     if mode == 3 and red_laser is not None:
         cv2.circle(img_contour, track_point, 3, (0, 255, 0), thickness=-1)
-        output = list(map(lambda x, y: y - x, track_point, red_laser))
-        data_float = [str(num) for num in list(float(num) for num in list(map(lambda x, y: y - x, track_point, red_laser)))]
-        print("output:", output)
-
-        data.append("#P3=")
-        data.append(data_float[0])
-        data.append("!")
-        data.append("#P4=")
-        data.append(data_float[1])
-        data.append("!")
-
-        for value in data:
-            # bytes_data = struct.pack('str', value)
-            for byte in value:
-                wiringpi.serialPutchar(serial, ord(byte))   
-                print(data)
+        
+        error_x = red_laser[0] - track_point[0]
+        error_y = red_laser[1] - track_point[1]
+        
+        # å°†åƒç´ åå·®è½¬æ¢ä¸ºè§’åº¦åå·®
+        target_yaw = float(error_x * 0.1)
+        target_pitch = float(error_y * 0.1)
+        
+        # å‘é€ç›®æ ‡è§’åº¦
+        send_target_angles(serial, target_yaw, target_pitch)
     
-    # »¬Ìõµ÷²Î£¬»ñÈ¡»¬ÌõµÄÖµ
+    # æ»‘æ¡è°ƒå‚ï¼Œè·å–æ»‘æ¡çš„å€¼
     red_hue_low = cv2.getTrackbarPos('Red Hue Low', 'Color Adjustments')
     red_hue_high = cv2.getTrackbarPos('Red Hue High', 'Color Adjustments')
     red_saturation_1 = cv2.getTrackbarPos('Red Saturation 1', 'Color Adjustments')
@@ -410,15 +468,15 @@ while(cap.isOpened()):
     upper_red1 = np.array([red_hue_high, 255, 255])
     lower_red2 = np.array([red_hue_low, red_saturation_2, red_value_2])
     upper_red2 = np.array([180, 255, 255])
-    # Éè¶¨ÂÌÉ«µÄãĞÖµ
+    # è®¾å®šç»¿è‰²çš„é˜ˆå€¼
     lower_green = np.array([green_hue_low, green_saturation, green_value])
     upper_green = np.array([green_hue_high, 255, 255])
-    # ¸ù¾İHSVÖµ¸üĞÂÑÕÉ«¿éÏÔÊ¾
+    # æ ¹æ®HSVå€¼æ›´æ–°é¢œè‰²å—æ˜¾ç¤º
     color_block[:] = [((red_hue_low + green_hue_low) // 2, (red_saturation_1 + green_saturation) // 2,
                        (red_value_1 + green_value) // 2)]
     color_block = cv2.cvtColor(color_block, cv2.COLOR_HSV2BGR)
 
-    # ÏÔÊ¾ÑÕÉ«¿é
+    # æ˜¾ç¤ºé¢œè‰²å—
     cv2.imshow('Color Adjustments', color_block)
 
     cv2.imshow("frame", img_contour)
@@ -435,3 +493,6 @@ while(cap.isOpened()):
     t += 1
     if t == total_steps:
         t = 0
+
+# å…³é—­ä¸²å£
+wiringpi.serialClose(serial)
