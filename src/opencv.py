@@ -1,21 +1,22 @@
 import cv2
 import numpy as np
-import wiringpi
+# import wiringpi  # 删除wiringpi导入
 import time
 import math
 import struct
 import string
+import serial
 
-#  0为输出红色激光与绿色激光的偏差， 1为输出激光点与扫矩形目标点的偏差, 2为输出激光点与一直线往复运动的目标点的偏差，模式4为输出激光点与1目标点的偏差
+#  0为输出红色激光与绿色激光的偏差， 1为输出激光点与扫矩形目标点的偏差, 2为输出激光点与一直线往复运动的目标点的偏差，模式3为输出激光点与1目标点的偏差
 #  模式2与模式3为调试下位机pid时使用
-mode = 1
+mode = 0
 
 cap = cv2.VideoCapture(0)
 #  打开本地视频调试可在pc端调试时使用
 video = cv2.VideoCapture('WIN_20240503_22_01_05_Pro.mp4')
-cap.set(3, 640)
-cap.set(4, 360)
-cap.set(cv2.CAP_PROP_FPS, 30)
+cap.set(3, 1280)
+cap.set(4, 720)
+cap.set(cv2.CAP_PROP_FPS, 120)
 
 def float_to_bytes_big_endian(f_val):
 
@@ -72,24 +73,28 @@ def parse_attitude_packet(data_buffer):
                     continue
     return None
 
-def send_target_angles(serial, target_yaw, target_pitch):
+def send_target_angles(ser, target_yaw, target_pitch):
 
+    if ser is None or not ser.is_open:
+        return
+        
     packet = create_target_angle_packet(target_yaw, target_pitch)
     
-    # 发送完整数据包（包括标识符）
-    for byte in packet:
-        wiringpi.serialPutchar(serial, byte)
+    # 使用serial库发送数据包
+    ser.write(packet)
     
     print(f"yaw: {target_yaw:.2f}°,pitch : {target_pitch:.2f}°")
 
-def read_attitude_data(serial):
+def read_attitude_data(ser):
 
-    # 读取串口缓冲区中的所有可用数据
+    if ser is None or not ser.is_open:
+        return None
+        
+    # 使用serial库读取串口缓冲区中的所有可用数据
     data_buffer = bytearray()
-    while wiringpi.serialDataAvail(serial) > 0:
-        byte = wiringpi.serialGetchar(serial)
-        if byte != -1:
-            data_buffer.append(byte & 0xFF)
+    if ser.in_waiting > 0:  
+        data = ser.read(ser.in_waiting) 
+        data_buffer.extend(data)
     
     # 解析姿态数据包
     if len(data_buffer) > 0:
@@ -290,6 +295,7 @@ def move_point_on_rectangle(points, t, total_steps):
     point_position = start_point + t_relative * (end_point - start_point)
     return point_position
 
+
 point_level = [320, 240]
 velocity = 5
 direction = 1
@@ -300,6 +306,196 @@ def move_point_level(velocity, direction):
 
 def callback(x):
     pass
+
+def point_to_line_distance(point, line_start, line_end):
+    #计算点到线段的最短距离和最近点
+    # 将点和线段转换为numpy数组
+    p = np.array(point)
+    a = np.array(line_start)
+    b = np.array(line_end)
+    
+    # 计算线段向量和点向量
+    ab = b - a
+    ap = p - a
+    
+    # 计算投影参数t
+    ab_squared = np.dot(ab, ab)
+    if ab_squared == 0:
+        # 线段退化为点
+        return np.linalg.norm(ap), a
+    
+    t = np.dot(ap, ab) / ab_squared
+    t = max(0, min(1, t))  # 限制在[0,1]范围内
+    
+    # 计算最近点
+    closest_point = a + t * ab
+    distance = np.linalg.norm(p - closest_point)
+    
+    return distance, closest_point
+
+def find_closest_point_on_rectangle(laser_point, rect_vertices):
+    # 找到激光点在矩形边界上的最近目标点
+    if laser_point is None or len(rect_vertices) != 4:
+        return None
+    
+    min_distance = float('inf')
+    closest_point = None
+    
+    # 遍历矩形的四条边
+    for i in range(4):
+        start_vertex = rect_vertices[i][0]  # 提取坐标 [x, y]
+        end_vertex = rect_vertices[(i + 1) % 4][0]
+        
+        distance, point_on_edge = point_to_line_distance(
+            laser_point, start_vertex, end_vertex
+        )
+        
+        if distance < min_distance:
+            min_distance = distance
+            closest_point = point_on_edge
+    
+    return closest_point.astype(int) if closest_point is not None else None
+
+def calculate_rectangle_center(rect_vertices):
+    # 计算矩形中心点
+    center = np.mean([vertex[0] for vertex in rect_vertices], axis=0)
+    return center.astype(int)
+
+def get_target_point_on_rectangle(laser_point, rect_vertices, mode='closest'):
+    
+    # 根据激光点位置确定矩形上的目标点
+    
+    # mode选项:
+    # - 'closest': 最近点模式 - 激光点投影到最近的矩形边 (正常用这个就行)
+    # - 'outward': 向外引导模式 - 如果激光点在矩形内，引导到最近边；如果在外，引导到最近点
+    # - 'center_guide': 中心引导模式 - 从矩形中心向激光点方向延伸到边界
+    
+    
+    if laser_point is None or len(rect_vertices) != 4:
+        return None
+    
+    if mode == 'closest':
+        return find_closest_point_on_rectangle(laser_point, rect_vertices)
+    
+    elif mode == 'center_guide':
+        # 从矩形中心向激光点方向延伸到边界
+        center = calculate_rectangle_center(rect_vertices)
+        
+        # 计算从中心到激光点的方向向量
+        direction = np.array(laser_point) - center
+        direction_norm = np.linalg.norm(direction)
+        
+        if direction_norm == 0:
+            # 激光点就在中心，返回任意边界点
+            return rect_vertices[0][0]
+        
+        # 归一化方向向量
+        direction = direction / direction_norm
+        
+        # 找到射线与矩形边界的交点
+        min_t = float('inf')
+        intersection_point = None
+        
+        for i in range(4):
+            start_vertex = np.array(rect_vertices[i][0])
+            end_vertex = np.array(rect_vertices[(i + 1) % 4][0])
+            
+            # 参数方程求交点
+            # 射线: center + t * direction
+            # 线段: start_vertex + s * (end_vertex - start_vertex)
+            
+            edge_vector = end_vertex - start_vertex
+            
+            # 解方程组
+            det = direction[0] * edge_vector[1] - direction[1] * edge_vector[0]
+            if abs(det) < 1e-6:  # 平行线
+                continue
+            
+            diff = start_vertex - center
+            t = (diff[0] * edge_vector[1] - diff[1] * edge_vector[0]) / det
+            s = (diff[0] * direction[1] - diff[1] * direction[0]) / det
+            
+            if t > 0 and 0 <= s <= 1:  # 有效交点
+                if t < min_t:
+                    min_t = t
+                    intersection_point = center + t * direction
+        
+        return intersection_point.astype(int) if intersection_point is not None else None
+    
+    else:  # 默认使用closest模式
+        return find_closest_point_on_rectangle(laser_point, rect_vertices)
+
+def calculate_tracking_error(laser_point, rect_vertices, tracking_mode='closest'):
+    
+    # 计算激光点跟踪矩形的error值
+    
+    # 返回:
+    # - error_x: 水平方向error (像素)
+    # - error_y: 垂直方向error (像素)
+    # - target_point: 目标点坐标 (用于可视化)
+   
+    
+    if laser_point is None or len(rect_vertices) == 0:
+        return 0, 0, None
+    
+    # 获取目标点
+    target_point = get_target_point_on_rectangle(laser_point, rect_vertices, tracking_mode)
+    
+    if target_point is None:
+        return 0, 0, None
+    
+    # 计算error = 目标点 - 当前点
+    error_x = target_point[0] - laser_point[0]
+    error_y = target_point[1] - laser_point[1]
+    
+    return error_x, error_y, target_point
+
+# 模式1
+def mode1_position_based_tracking(red_laser, rectangles, ser, img_contour):
+    
+    #基于位置的矩形跟踪模式1
+   
+    
+    if red_laser is None or len(rectangles) < 1:
+        return
+    
+    # 选择矩形（如果有多个，可以选择面积最大的或平均）
+    if len(rectangles) >= 2:
+        # 使用前两个矩形的平均值
+        target_rect = np.average([rectangles[0], rectangles[1]], axis=0).astype(np.int32)
+    else:
+        # 只有一个矩形
+        target_rect = rectangles[0]
+    
+    # 绘制目标矩形
+    cv2.drawContours(img_contour, [target_rect], -1, (255, 255, 0), 2)
+    
+    # 计算跟踪error
+    error_x, error_y, target_point = calculate_tracking_error(
+        red_laser, target_rect, tracking_mode='closest'
+    )
+    
+    # 可视化目标点和连接线
+    if target_point is not None:
+        cv2.circle(img_contour, tuple(target_point), 5, (0, 255, 0), -1)  # 绿色目标点
+        cv2.line(img_contour, red_laser, tuple(target_point), (255, 0, 255), 2)  # 紫色连接线
+        
+        # 显示error信息
+        cv2.putText(img_contour, f"Error X:{error_x} Y:{error_y}", 
+                   (20, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(img_contour, f"Target:{target_point}", 
+                   (20, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # 将像素error转换为角度error并发送
+    if target_point is not None:
+        # 转换系数：0.03度/像素
+        target_yaw = float(error_x * 0.03)    # 水平error
+        target_pitch = float(-error_y * 0.03) # 垂直error (注意负号)
+        
+        # 发送error到下位机
+        send_target_angles(ser, target_yaw, target_pitch)
+        
+        print(f"Position-based tracking - Error X:{error_x}, Y:{error_y}, Yaw:{target_yaw:.3f}°, Pitch:{target_pitch:.3f}°")
 
 cv2.namedWindow('Color Adjustments', cv2.WINDOW_NORMAL)
 cv2.resizeWindow('Color Adjustments', 600, 400)
@@ -323,13 +519,17 @@ cv2.createTrackbar('Green Value', 'Color Adjustments', 90, 255, callback)
 color_block = np.zeros((300, 300, 3), np.uint8)
 
 #  计时用
-t = 0
-total_steps = 300
+# t = 0
+# total_steps = 300
 
 track_point = (320, 240)
 
-# 初始化串口
-serial = wiringpi.serialOpen('/dev/ttyUSB0', 921600)
+try:
+    ser = serial.Serial('/dev/ttyACM0', 921600, timeout=0.1)
+    print("串口打开成功")
+except:
+    ser = None
+    print("串口打开失败")
 
 # 用于存储接收到的姿态数据
 current_attitude = None
@@ -345,7 +545,7 @@ while(cap.isOpened()):
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
 
     # 读取下位机发送的姿态数据
-    attitude_data = read_attitude_data(serial)
+    attitude_data = read_attitude_data(ser)  # 修改：传入ser对象
     if attitude_data:
         current_attitude = attitude_data
         print(f"Received attitude - Yaw: {attitude_data['yaw']:.2f}, Pitch: {attitude_data['pitch']:.2f}")
@@ -355,7 +555,7 @@ while(cap.isOpened()):
         cv2.putText(img_contour, f"Attitude Y:{current_attitude['yaw']:.1f} P:{current_attitude['pitch']:.1f}", 
                     (20, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1, cv2.LINE_AA)
 
-    # 预处理图像，包括转为灰度图，高斯模糊，边缘检测，以及检测激光用的HSV色域图
+    # 预处理图像，包括转为灰度图，高斯模糊，用canny算子边缘检测，以及检测激光用的HSV色域图
     img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     img_blur = cv2.GaussianBlur(img_gray, (5,5), 1)
     img_canny = cv2.Canny(img_blur, 50, 150)
@@ -364,6 +564,7 @@ while(cap.isOpened()):
     #找矩形，红激光，绿激光
     rectangles = find_rectangles(img_canny)
     red_laser = red_laser_detection(img_hsv)
+
     # 卡尔曼滤波预测激光点位置，未调参，效果存疑
     if red_laser is not None:
         red_laser_cx, red_laser_cy = red_laser
@@ -388,42 +589,24 @@ while(cap.isOpened()):
         cv2.putText(img_contour, f"green:{green_laser}", (20, 130),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
 
-    # ===================== 修改：使用新的二进制协议发送数据 =====================
-
     if red_laser is not None and green_laser is not None and mode == 0:
-        # 计算偏差（这里假设偏差直接作为目标角度，你可能需要根据实际情况转换）
-        error_x = predicted_red_laser_position[0] - green_laser[0]
-        error_y = predicted_red_laser_position[1] - green_laser[1]
         
-        # 将像素偏差转换为角度偏差（你可能需要根据实际标定调整这个转换）
-        target_yaw = float(error_x * 0.1)  # 比例系数需要根据实际情况调整
-        target_pitch = float(error_y * 0.1)
+        error_x = predicted_red_laser[0] - green_laser[0]
+        error_y = predicted_red_laser[1] - green_laser[1]
+        
+        # 将像素偏差转换为角度偏差
+        target_yaw = float(error_x *0.03 ) 
+        target_pitch = float(-error_y *0.03 )
         
         cv2.putText(img_contour, f"target YAW:{target_yaw:.2f} PITCH:{target_pitch:.2f}", (20, 170),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 1, cv2.LINE_AA)
         
         # 发送目标角度
-        send_target_angles(serial, target_yaw, target_pitch)
+        send_target_angles(ser, target_yaw, target_pitch) 
+        
 
     if (mode == 1) and len(rectangles) >= 2:
-        average_rect = np.average([rectangles[0], rectangles[1]], axis=0).astype(np.int32)
-        cv2.drawContours(img_contour, [average_rect], -1, (255, 255, 0), 1)
-        rect_point = move_point_on_rectangle(average_rect, t, total_steps)
-        # 确保 rect_point 是一个整数类型的二元组
-        rect_point_1 = tuple(rect_point[0].astype(int))
-        cv2.circle(img_contour, rect_point_1, 1, (0, 255, 0), thickness=2)
-        if red_laser is not None:
-            error_x = predicted_red_laser_position[0] - rect_point_1[0]
-            error_y = predicted_red_laser_position[1] - rect_point_1[1]
-            
-            # 将像素偏差转换为角度偏差
-            target_yaw = float(error_x * 0.1)
-            target_pitch = float(error_y * 0.1)
-            
-            # 发送目标角度
-            send_target_angles(serial, target_yaw, target_pitch)
-            print("Target angles:", {"yaw": target_yaw, "pitch": target_pitch})
-
+        mode1_position_based_tracking(red_laser, rectangles, ser, img_contour)
 
     if mode == 2 and red_laser is not None:
         move_point_level(velocity, direction)
@@ -434,11 +617,11 @@ while(cap.isOpened()):
         error_y = red_laser[1] - point_level[1]
         
         # 将像素偏差转换为角度偏差
-        target_yaw = float(error_x * 0.1)
-        target_pitch = float(error_y * 0.1)
+        target_yaw = float(error_x * 0.03)
+        target_pitch = float(-error_y * 0.03)
         
         # 发送目标角度
-        send_target_angles(serial, target_yaw, target_pitch)
+        send_target_angles(ser, target_yaw, target_pitch)  # 修改：传入ser对象
 
     if mode == 3 and red_laser is not None:
         cv2.circle(img_contour, track_point, 3, (0, 255, 0), thickness=-1)
@@ -447,11 +630,11 @@ while(cap.isOpened()):
         error_y = red_laser[1] - track_point[1]
         
         # 将像素偏差转换为角度偏差
-        target_yaw = float(error_x * 0.1)
-        target_pitch = float(error_y * 0.1)
+        target_yaw = float(error_x * 0.03)
+        target_pitch = float(-error_y * 0.03)
         
         # 发送目标角度
-        send_target_angles(serial, target_yaw, target_pitch)
+        send_target_angles(ser, target_yaw, target_pitch)  # 修改：传入ser对象
     
     # 滑条调参，获取滑条的值
     red_hue_low = cv2.getTrackbarPos('Red Hue Low', 'Color Adjustments')
@@ -490,9 +673,6 @@ while(cap.isOpened()):
     if key == ord('x'):
         track_point = (480, 240)
 
-    t += 1
-    if t == total_steps:
-        t = 0
-
-# 关闭串口
-wiringpi.serialClose(serial)
+    # t += 1
+    # if t == total_steps:
+    #     t = 0
