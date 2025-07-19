@@ -1,3 +1,0 @@
-/home/orangepi/workspace/2023-E-TRAINING/build/CMakeFiles/run.dir
-/home/orangepi/workspace/2023-E-TRAINING/build/CMakeFiles/edit_cache.dir
-/home/orangepi/workspace/2023-E-TRAINING/build/CMakeFiles/rebuild_cache.dir
